@@ -2,8 +2,9 @@ name: Daily Crunchyroll Dub Scanner
 
 on:
   schedule:
-    # 22:00 UTC is exactly 6:00 PM Eastern Time  Adding for fun
-    - cron: '0 22 * * *'
+    # 22:13 UTC is 6:13 PM Eastern Time. Shifting off the '0' minute drops 
+    # the queuing delay significantly because you skip the hourly rush.
+    - cron: '15 22 * * *'
   
   # This line allows you to click a button on GitHub to test run it manually anytime
   workflow_dispatch:
