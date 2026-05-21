@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+from zoneinfo import ZoneInfo # Built into Python 3.9+
 import os
 
 # ─── CONFIGURATION ───────────────────────────────────────────────────────────
@@ -43,7 +44,7 @@ def scan_today_calendar():
     today_matches = []
 
     # Calculate the precise numeric date string for just today (e.g., "5/20")
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("America/New_York"))
     today_numeric = f"{now.month}/{now.day}"
     
     # Strictly isolate to today's active identifiers

@@ -2,9 +2,10 @@ name: Daily Crunchyroll Dub Scanner
 
 on:
   schedule:
-    # 6:00 PM Eastern Time is 10:00 PM UTC (or 11:00 PM UTC during Daylight Saving Time)
-    # This cron expression triggers the server daily at 22:00 UTC
+    # 22:00 UTC is exactly 6:00 PM Eastern Time
     - cron: '0 22 * * *'
+  
+  workflow_dispatch:
   
   # This line allows you to click a button on GitHub to test run it manually anytime
   workflow_dispatch:
