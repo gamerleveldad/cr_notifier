@@ -21,7 +21,8 @@ WATCHLIST = [
     "Snowball Earth",
     "That Time I Got Reincarnated as a Slime",
     "The Warrior Princess and the Barbaric King",
-    "Reborn as a Vending Machine, I Now Wander the Dungeon"
+    "Reborn as a Vending Machine, I Now Wander the Dungeon",
+    "Daemons of the Shadow Realm"
 ]
 # ──────────────────────────────────────────────────────────────────────────────
 
