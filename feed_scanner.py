@@ -26,31 +26,53 @@ WATCHLIST = [
 ]
 # ──────────────────────────────────────────────────────────────────────────────
 
-def scan_today_calendar():
+def extract_episode_details(episode_item):
+    """
+    Scans the episode element to parse numbers, ranges, or special drops.
+    Handles 'Episode X', 'Episodes X-Y', and fallback text cleanly.
+    """
+    ep_element = episode_item.find(class_=lambda c: c and "episode" in c.lower())
+    if not ep_element:
+        return "New Drop"
+        
+    raw_text = ep_element.get_text(strip=True)
+    match = re.search(r'(\d+(?:-\d+)?(?:\.\d+)?)', raw_text)
+    
+    if match:
+        found_num = match.group(1)
+        if "-" in found_num:
+            return f"Episodes {found_num}"
+        return f"Episode {found_num}"
+        
+    clean_fallback = re.sub(r'\s*available\s*', '', raw_text, flags=re.IGNORECASE).strip()
+    return clean_fallback if clean_fallback else "New Drop"
+
+def scan_live_calendar():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    cookies = {
-        "locale": "en-US"
-    }
+    cookies = {"locale": "en-US"}
     
     print("🛰️ Connecting to Crunchyroll Premium Simulcast Calendar...")
     response = requests.get(CALENDAR_URL, headers=headers, cookies=cookies)
     
     if response.status_code != 200:
-        print(f"❌ Failed to fetch calendar. Status Code: {response.status_code}")
+        print(f"Failed to fetch calendar. Status Code: {response.status_code}")
         return
 
     soup = BeautifulSoup(response.text, "html.parser")
-    today_matches = []
+    matched_dubs = []
 
-    # Calculate the precise numeric date string for just today (e.g., "5/20")
-    now = datetime.now(ZoneInfo("America/New_York"))
-    today_numeric = f"{now.month}/{now.day}"
+    # ─── 2-DAY BACKWARD LOOKING WINDOW ────────────────────────────────────────
+    now_local = datetime.now(ZoneInfo("America/New_York"))
+    yesterday = now_local - timedelta(days=2)
     
-    # Strictly isolate to today's active identifiers
-    target_labels = [today_numeric, "TODAY"]
-    print(f"📅 Scanning calendar columns matching exactly: {target_labels}\n")
+    target_labels = [
+        f"{yesterday.month}/{yesterday.day}",
+        f"{now_local.month}/{now_local.day}",
+        "TODAY"
+    ]
+    print(f"📅 Scanning calendar columns matching window: {target_labels}\n")
     
     day_blocks = soup.find_all("li", class_="day")
 
@@ -60,13 +82,12 @@ def scan_today_calendar():
             continue
             
         day_text = day_header.get_text(strip=True)
-        is_today = any(target.upper() in day_text.upper() for target in target_labels)
+        is_target = any(target.upper() in day_text.upper() for target in target_labels)
         
-        # Skip the iteration entirely if the block doesn't belong to today
-        if not is_today:
+        if not is_target:
             continue
 
-        print(f"==== Processing Today's Column: {day_text} ====")
+        print(f"==== Processing Column: {day_text} ====")
         episodes = day_block.find_all(["article", "div"], class_=lambda c: c and "release" in c.lower())
         
         for episode in episodes:
@@ -78,53 +99,47 @@ def scan_today_calendar():
             
             lang_element = episode.find(class_=lambda c: c and ("type" in c.lower() or "lang" in c.lower() or "subtitle" in c.lower()))
             lang_text = lang_element.get_text(strip=True) if lang_element else "Subbed"
-            
-            ep_num_element = episode.find(class_=lambda c: c and "episode" in c.lower())
-            ep_num = ep_num_element.get_text(strip=True) if ep_num_element else "New Drop"
 
-            # Check if the title belongs to your English Dub tracking criteria
             if "dub" in lang_text.lower() or "english" in lang_text.lower() or "english" in show_title.lower():
-                
-                # Check for an intersection against your custom watchlist entries
                 is_on_watchlist = any(anime.lower() in show_title.lower() for anime in WATCHLIST)
                 
                 if is_on_watchlist:
-                    clean_entry = f"**{show_title}** - {ep_num} 🟢"
-                    if clean_entry not in today_matches:
-                        print(f"   🎯 WATCHLIST MATCH: {show_title} ({ep_num})")
-                        today_matches.append(clean_entry)
+                    episode_string = extract_episode_details(episode)
+                    
+                    # Store as raw data components to keep presentation styling separated
+                    clean_entry = (show_title, episode_string)
+                    if clean_entry not in matched_dubs:
+                        print(f"   🎯 MATCH: {show_title} ({episode_string})")
+                        matched_dubs.append(clean_entry)
 
     print("\n" + "="*50 + "\n")
-    if today_matches:
-        print(f"🎉 Found {len(today_matches)} tracking matches today. Routing to Discord...")
-        send_discord_notification(today_matches)
+    if matched_dubs:
+        print(f"Found {len(matched_dubs)} matches. Routing to Discord...")
+        send_discord_notification(matched_dubs)
     else:
-        print("❌ Scan complete. No watchlist English dubs aired today.")
+        print("Scan complete. No watchlist English dubs found in this window.")
 
 def send_discord_notification(matches_list):
-    if DISCORD_WEBHOOK_URL == "YOUR_DISCORD_WEBHOOK_URL_HERE":
-        print("⚠️ Warning: Discord notification skipped. Set your DISCORD_WEBHOOK_URL string first.")
+    if not DISCORD_WEBHOOK_URL:
+        print("Warning: Discord notification skipped. Missing DISCORD_WEBHOOK variable.")
         return
 
-    # Build a clean markdown message block for the Discord chat interface
-    message_content = (
-        "🤖 **Daily Crunchyroll Dub Alert** 🤖\n"
-        "The following tracked series dropped new English Dub episodes today:\n\n"
-        + "\n".join([f"• {item}" for item in matches_list])
-    )
-    
-    payload = {
-        "content": message_content
-    }
+    # ─── RESTRUCTURED OUTPUT FORMAT ──────────────────────────────────────────
+    message_lines = ["Daily Dub Anime Drops"]
+    for title, episode in matches_list:
+        message_lines.append(f"- {title}: {episode}")
+        
+    message_content = "\n".join(message_lines)
+    # ──────────────────────────────────────────────────────────────────────────
     
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        response = requests.post(DISCORD_WEBHOOK_URL, json={"content": message_content})
         if response.status_code == 204:
-            print("🚀 Discord message delivered successfully!")
+            print("Discord message delivered successfully!")
         else:
-            print(f"⚠️ Discord returned an unexpected status code: {response.status_code}")
+            print(f"Discord returned error status code: {response.status_code}")
     except Exception as e:
-        print(f"❌ Failed to dispatch web request to Discord endpoints: {e}")
+        print(f"Failed to dispatch web request to Discord: {e}")
 
 if __name__ == "__main__":
-    scan_today_calendar()
+    scan_live_calendar()
