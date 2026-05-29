@@ -29,18 +29,20 @@ SEED_WATCHLIST = [
 # ─── DATABASE OPERATIONS ──────────────────────────────────────────────────────
 
 def init_db():
-    """Initializes the tracking database with support for Watching, Dormant, and History states."""
+    """Initializes the tracking database with support for active tracking, history, and recommendations."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
+    # Feature #1: Schedule Tracking
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS watchlist_schedule (
             anime_name TEXT PRIMARY KEY,
-            expected_weekday INTEGER,  -- 0=Monday, 1=Tuesday, ..., 4=Friday, 6=Sunday
+            expected_weekday INTEGER,
             last_seen_date TEXT
         )
     ''')
     
+    # Feature #2: Watch History Core
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS watch_history (
             anime_name TEXT PRIMARY KEY,
@@ -49,13 +51,41 @@ def init_db():
         )
     ''')
     
-    # INSERT OR IGNORE safely populates new entries without disturbing existing custom states
-    print("🌱 Synchronizing watchlist targets with database storage...")
-    for anime in SEED_WATCHLIST:
-        cursor.execute('''
-            INSERT OR IGNORE INTO watch_history (anime_name, status, user_rating)
-            VALUES (?, 'Watching', 'Liked')
-        ''', (anime,))
+    # NEW FOR FEATURE #2: The pool of candidate shows available for suggestions
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS recommendation_pool (
+            anime_name TEXT PRIMARY KEY,
+            genre TEXT,
+            description TEXT
+        )
+    ''')
+    
+    # ─── SEED WATCH HISTORY ─────────────────────────────────────────────────
+    cursor.execute("SELECT COUNT(*) FROM watch_history")
+    if cursor.fetchone()[0] == 0:
+        print("🌱 Seeding watch_history table...")
+        for anime in SEED_WATCHLIST:
+            cursor.execute('''
+                INSERT OR IGNORE INTO watch_history (anime_name, status, user_rating)
+                VALUES (?, 'Watching', 'Liked')
+            ''', (anime,))
+            
+    # ─── SEED RECOMMENDATION POOL (TEST SHOWS) ──────────────────────────────
+    # We will seed 3 shows. One of these we will deliberately mark as 'Disliked' 
+    # in your history later to prove our exclusion filter works perfectly!
+    cursor.execute("SELECT COUNT(*) FROM recommendation_pool")
+    if cursor.fetchone()[0] == 0:
+        print("🌱 Seeding recommendation pool with test candidates...")
+        test_recommendations = [
+            ("Solo Leveling", "Action", "A world-renowned hunter progression system."),
+            ("Kaiju No. 8", "Action/Sci-Fi", "A monster cleaner gets infected with powers."),
+            ("Boring Filler Show", "Comedy", "A placeholder show to test our dislike filter.")
+        ]
+        for name, genre, desc in test_recommendations:
+            cursor.execute('''
+                INSERT OR IGNORE INTO recommendation_pool (anime_name, genre, description)
+                VALUES (?, ?, ?)
+            ''', (name, genre, desc))
             
     conn.commit()
     conn.close()
@@ -110,6 +140,32 @@ def check_missing_schedules(found_titles, current_weekday):
             missing_alerts.append(f"- {show} was scheduled to have an episode today but no episodes found.")
             
     return missing_alerts
+
+def get_smart_recommendation():
+    """
+    Finds a candidate show from the recommendation pool.
+    Strictly filters out anything you are currently watching, completed, or disliked.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # The SQL Exclusion Filter: Selects a candidate you haven't touched or hated
+    cursor.execute('''
+        SELECT p.anime_name, p.genre 
+        FROM recommendation_pool p
+        LEFT JOIN watch_history h ON p.anime_name = h.anime_name
+        WHERE h.anime_name IS NULL 
+           OR (h.status NOT IN ('Watching', 'Dormant', 'Completed') AND h.user_rating != 'Disliked')
+        ORDER BY RANDOM()
+        LIMIT 1
+    ''')
+    
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return f"Looking for something new? Try starting: **{result[0]}** ({result[1]})"
+    return None
 
 # ─── PARSING & SCRAPING HELPERS ───────────────────────────────────────────────
 
@@ -237,26 +293,33 @@ def scan_live_calendar():
 
     print("\n" + "="*50 + "\n")
     
-    # Process schedule anomalies for the day
+    # 1. Process schedule anomalies for the day
     missing_alerts = check_missing_schedules(found_titles_today, now_local.weekday())
     
-    # Deliver structured message out to Discord
-    if matched_drops or missing_alerts:
+    # 2. FEATURE #2 TRIGGER: If fewer than 2 episodes aired tonight, grab a recommendation
+    recommendation_line = None
+    if len(matched_drops) < 2:
+        print("Quiet night detected (fewer than 2 active drops). Querying engine for a suggestion...")
+        recommendation_line = get_smart_recommendation()
+    
+    # 3. Deliver structured message out to Discord
+    if matched_drops or missing_alerts or recommendation_line:
         print("Updates detected. Routing to Discord...")
-        send_discord_notification(matched_drops, missing_alerts)
+        # Updated to include our new recommendation string parameter
+        send_discord_notification(matched_drops, missing_alerts, recommendation_line)
     else:
-        print("Scan complete. No active drops or missing schedule alerts today.")
+        print("Scan complete. No active drops, alerts, or suggestions today.")
 
 # ─── NOTIFICATION DISPATCH ────────────────────────────────────────────────────
 
-def send_discord_notification(matches_list, alerts_list):
+def send_discord_notification(matches_list, alerts_list, recommendation_str=None):
     if not DISCORD_WEBHOOK_URL:
-        print("Warning: Discord notification skipped. Missing DISCORD_WEBHOOK variable.")
+        print("⚠️ Warning: Discord notification skipped. Missing DISCORD_WEBHOOK variable.")
         return
 
     message_lines = []
     
-    # Section 1: Active releases matching your minimalist style layout
+    # Section 1: Active releases
     if matches_list:
         message_lines.append("Daily Dub Anime Drops")
         for title, episode in matches_list:
@@ -265,9 +328,15 @@ def send_discord_notification(matches_list, alerts_list):
     # Section 2: Missing schedule anomaly logs
     if alerts_list:
         if message_lines:
-            message_lines.append("") # Break spacing row
+            message_lines.append("") 
         message_lines.append("⚠️ Missed Schedule Alerts")
         message_lines.extend(alerts_list)
+        
+    # Section 3: Feature #2 Smart Recommendation Line
+    if recommendation_str:
+        if message_lines:
+            message_lines.append("") # Clean double space layout break
+        message_lines.append(recommendation_str)
         
     message_content = "\n".join(message_lines)
     
