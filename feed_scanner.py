@@ -67,10 +67,8 @@ def extract_episode_details(episode_item):
 def get_weekday_from_label(day_text, now_local):
     """Converts a calendar text label (like '5/29' or 'TODAY') into an integer weekday (0-6)."""
     day_clean = day_text.upper().strip()
-    if "TODAY" in day_clean:
-        return now_local.weekday()
-        
-    # Match pattern like '5/29' or '05/29'
+    
+    # Check for date pattern first (e.g., '5/29') so backfilling works perfectly
     date_match = re.search(r'(\d+)/(\d+)', day_clean)
     if date_match:
         month = int(date_match.group(1))
@@ -82,6 +80,10 @@ def get_weekday_from_label(day_text, now_local):
         except ValueError:
             pass
             
+    # Fallback only if no numbers are found at all
+    if "TODAY" in day_clean:
+        return now_local.weekday()
+        
     return now_local.weekday()
 
 def update_show_schedule(anime_name, weekday_idx, date_str):
@@ -140,13 +142,15 @@ def scan_live_calendar():
 
     # ─── 2-DAY BACKWARD LOOKING WINDOW ────────────────────────────────────────
     now_local = datetime.now(ZoneInfo("America/New_York"))
-    yesterday = now_local - timedelta(days=1)
+    yesterday = now_local - timedelta(days=4) #keep me at zero in the future
     
-    target_labels = [
-        f"{yesterday.month}/{yesterday.day}",
-        f"{now_local.month}/{now_local.day}",
-        "TODAY"
-    ]
+    #target_labels = [
+    #    f"{yesterday.month}/{yesterday.day}",
+    #    f"{now_local.month}/{now_local.day}",
+    #    "TODAY"
+    #]
+    # Temporary wide net to train the DB instantly
+    target_labels = [f"{now_local.month}/{now_local.day - i}" for i in range(6)] + ["TODAY"]
     print(f"📅 Scanning calendar columns matching window: {target_labels}\n")
     
     day_blocks = soup.find_all("li", class_="day")
