@@ -1,16 +1,14 @@
-import requests
+import os
 import re
+import sqlite3
+import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo # Built into Python 3.9+
-import os
+from zoneinfo import ZoneInfo
 
-# ─── CONFIGURATION ───────────────────────────────────────────────────────────
-# Force the premium query parameters to load the full release grid
 CALENDAR_URL = "https://www.crunchyroll.com/simulcastcalendar?filter=premium"
-
-# Replace this string with your actual Discord channel integration Webhook URL
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK")
+DB_FILE = "anime_tracker.db"
 
 WATCHLIST = [
     "The Beginning After the End",
@@ -26,12 +24,30 @@ WATCHLIST = [
     "Daemons of the Shadow Realm"
 ]
 # ──────────────────────────────────────────────────────────────────────────────
+def init_db():
+    """Initializes the tracking database and creates necessary tables if they don't exist."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS watchlist_schedule (
+            anime_name TEXT PRIMARY KEY,
+            expected_weekday INTEGER,  -- 0=Monday, 1=Tuesday, ..., 4=Friday, 6=Sunday
+            last_seen_date TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS watch_history (
+            anime_name TEXT PRIMARY KEY,
+            status TEXT,               -- 'Completed', 'Dropped', 'Watching'
+            user_rating TEXT           -- 'Liked', 'Disliked'
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("💾 Database initialized successfully.")
 
 def extract_episode_details(episode_item):
-    """
-    Scans the episode element to parse numbers, ranges, or special drops.
-    Handles 'Episode X', 'Episodes X-Y', and fallback text cleanly.
-    """
+    """Scans the episode element to parse numbers, ranges, or special drops."""
     ep_element = episode_item.find(class_=lambda c: c and "episode" in c.lower())
     if not ep_element:
         return "New Drop"
@@ -48,7 +64,64 @@ def extract_episode_details(episode_item):
     clean_fallback = re.sub(r'\s*available\s*', '', raw_text, flags=re.IGNORECASE).strip()
     return clean_fallback if clean_fallback else "New Drop"
 
+def get_weekday_from_label(day_text, now_local):
+    """Converts a calendar text label (like '5/29' or 'TODAY') into an integer weekday (0-6)."""
+    day_clean = day_text.upper().strip()
+    if "TODAY" in day_clean:
+        return now_local.weekday()
+        
+    # Match pattern like '5/29' or '05/29'
+    date_match = re.search(r'(\d+)/(\d+)', day_clean)
+    if date_match:
+        month = int(date_match.group(1))
+        day = int(date_match.group(2))
+        try:
+            # Construct date using current execution year
+            target_date = datetime(year=now_local.year, month=month, day=day)
+            return target_date.weekday()
+        except ValueError:
+            pass
+            
+    return now_local.weekday()
+
+def update_show_schedule(anime_name, weekday_idx, date_str):
+    """Saves or updates a show's expected release day in the database."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO watchlist_schedule (anime_name, expected_weekday, last_seen_date)
+        VALUES (?, ?, ?)
+        ON CONFLICT(anime_name) DO UPDATE SET
+            expected_weekday = excluded.expected_weekday,
+            last_seen_date = excluded.last_seen_date
+    ''', (anime_name, weekday_idx, date_str))
+    conn.commit()
+    conn.close()
+
+def check_missing_schedules(found_titles, current_weekday):
+    """Compares database schedules against what actually aired today to find anomalies."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # Grab all shows that are supposed to air on this weekday index
+    cursor.execute(
+        "SELECT anime_name FROM watchlist_schedule WHERE expected_weekday = ?", 
+        (current_weekday,)
+    )
+    scheduled_shows = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    
+    missing_alerts = []
+    for show in scheduled_shows:
+        # Cross-reference against your live list and ensure it's still on your watchlist
+        if show not in found_titles and show in WATCHLIST:
+            missing_alerts.append(f"- {show} was scheduled to have an episode today but no episodes found.")
+            
+    return missing_alerts
+
 def scan_live_calendar():
+    init_db()
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -58,15 +131,16 @@ def scan_live_calendar():
     response = requests.get(CALENDAR_URL, headers=headers, cookies=cookies)
     
     if response.status_code != 200:
-        print(f"Failed to fetch calendar. Status Code: {response.status_code}")
+        print(f"❌ Failed to fetch calendar. Status Code: {response.status_code}")
         return
 
     soup = BeautifulSoup(response.text, "html.parser")
-    matched_dubs = []
+    matched_drops = []
+    found_titles_today = set()
 
     # ─── 2-DAY BACKWARD LOOKING WINDOW ────────────────────────────────────────
     now_local = datetime.now(ZoneInfo("America/New_York"))
-    yesterday = now_local - timedelta(days=0)
+    yesterday = now_local - timedelta(days=1)
     
     target_labels = [
         f"{yesterday.month}/{yesterday.day}",
@@ -89,6 +163,8 @@ def scan_live_calendar():
             continue
 
         print(f"==== Processing Column: {day_text} ====")
+        weekday_idx = get_weekday_from_label(day_text, now_local)
+        
         episodes = day_block.find_all(["article", "div"], class_=lambda c: c and "release" in c.lower())
         
         for episode in episodes:
@@ -102,45 +178,66 @@ def scan_live_calendar():
             lang_text = lang_element.get_text(strip=True) if lang_element else "Subbed"
 
             if "dub" in lang_text.lower() or "english" in lang_text.lower() or "english" in show_title.lower():
-                is_on_watchlist = any(anime.lower() in show_title.lower() for anime in WATCHLIST)
+                # Matching logic against your explicit watchlist array
+                matched_watchlist_name = next((anime for anime in WATCHLIST if anime.lower() in show_title.lower()), None)
                 
-                if is_on_watchlist:
+                if matched_watchlist_name:
                     episode_string = extract_episode_details(episode)
                     
-                    # Store as raw data components to keep presentation styling separated
+                    # 1. Update/Learn schedule entry in DB using the clean watchlist title variant
+                    update_show_schedule(matched_watchlist_name, weekday_idx, day_text)
+                    
+                    # Track that it aired successfully today if it falls on our main run day
+                    if weekday_idx == now_local.weekday():
+                        found_titles_today.add(matched_watchlist_name)
+                    
                     clean_entry = (show_title, episode_string)
-                    if clean_entry not in matched_dubs:
+                    if clean_entry not in matched_drops:
                         print(f"   🎯 MATCH: {show_title} ({episode_string})")
-                        matched_dubs.append(clean_entry)
+                        matched_drops.append(clean_entry)
 
     print("\n" + "="*50 + "\n")
-    if matched_dubs:
-        print(f"Found {len(matched_dubs)} matches. Routing to Discord...")
-        send_discord_notification(matched_dubs)
+    
+    # 2. Look up what was supposed to air today vs what actually dropped
+    missing_alerts = check_missing_schedules(found_titles_today, now_local.weekday())
+    
+    # 3. Route everything out to your Discord notification block
+    if matched_drops or missing_alerts:
+        print("🎉 Updates detected. Routing to Discord...")
+        send_discord_notification(matched_drops, missing_alerts)
     else:
-        print("Scan complete. No watchlist English dubs found in this window.")
+        print("❌ Scan complete. No active drops or missing schedule alerts today.")
 
-def send_discord_notification(matches_list):
+def send_discord_notification(matches_list, alerts_list):
     if not DISCORD_WEBHOOK_URL:
-        print("Warning: Discord notification skipped. Missing DISCORD_WEBHOOK variable.")
+        print("⚠️ Warning: Discord notification skipped. Missing DISCORD_WEBHOOK variable.")
         return
 
-    # ─── RESTRUCTURED OUTPUT FORMAT ──────────────────────────────────────────
-    message_lines = ["Daily Dub Anime Drops"]
-    for title, episode in matches_list:
-        message_lines.append(f"- {title}: {episode}")
+    message_lines = []
+    
+    # Section 1: Standard Releases
+    if matches_list:
+        message_lines.append("Daily Dub Anime Drops")
+        for title, episode in matches_list:
+            message_lines.append(f"- {title}: {episode}")
+            
+    # Section 2: Missing Anomalies (Your Feature #1 requirement)
+    if alerts_list:
+        if message_lines:
+            message_lines.append("") # Clean spacing block break
+        message_lines.append("⚠️ Missed Schedule Alerts")
+        message_lines.extend(alerts_list)
         
     message_content = "\n".join(message_lines)
-    # ──────────────────────────────────────────────────────────────────────────
     
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json={"content": message_content})
         if response.status_code == 204:
-            print("Discord message delivered successfully!")
+            print("🚀 Discord message delivered successfully!")
         else:
-            print(f"Discord returned error status code: {response.status_code}")
+            print(f"⚠️ Discord returned error status code: {response.status_code}")
     except Exception as e:
-        print(f"Failed to dispatch web request to Discord: {e}")
+        print(f"❌ Failed to dispatch web request to Discord: {e}")
 
 if __name__ == "__main__":
     scan_live_calendar()

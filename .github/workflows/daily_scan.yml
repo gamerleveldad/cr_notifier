@@ -2,36 +2,44 @@ name: Daily Crunchyroll Dub Scanner
 
 on:
   schedule:
-    # 23:15 UTC is 7:15 PM Eastern Time. Shifting off the '0' minute drops 
-    # the queuing delay significantly because you skip the hourly rush.
+    # 03:15 UTC is exactly 11:15 PM Eastern Time (EDT)
     - cron: '15 16 * * *'
-  
-  # This line allows you to click a button on GitHub to test run it manually anytime
   workflow_dispatch:
+
+# Added permissions block allowing GitHub to write files back to your repository
+permissions:
+  contents: write
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. Pull down the python code files from the repository
     - name: Checkout Repository Code
       uses: actions/checkout@v4
+      with:
+        persist-credentials: true # Crucial for pulling/pushing changes
 
-    # 2. Spin up a clean Python environment on the virtual server
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    # 3. Download the specific layout scrapers we need
     - name: Install Scraping Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install requests beautifulsoup4
 
-    # 4. Fire off the script while securely injecting your Discord token
     - name: Run Scanner Script
       env:
         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
       run: python feed_scanner.py
+
+    # Automatically save database updates back into your repo
+    - name: Commit and Save Database Changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add anime_tracker.db || true
+        git commit -m "Auto-updated anime schedule logs [skip ci]" || true
+        git push origin master || true
