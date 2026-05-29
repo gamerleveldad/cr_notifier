@@ -66,7 +66,7 @@ def scan_live_calendar():
 
     # ─── 2-DAY BACKWARD LOOKING WINDOW ────────────────────────────────────────
     now_local = datetime.now(ZoneInfo("America/New_York"))
-    yesterday = now_local - timedelta(days=2)
+    yesterday = now_local - timedelta(days=0)
     
     target_labels = [
         f"{yesterday.month}/{yesterday.day}",
