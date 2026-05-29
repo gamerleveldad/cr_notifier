@@ -142,15 +142,15 @@ def scan_live_calendar():
 
     # ─── 2-DAY BACKWARD LOOKING WINDOW ────────────────────────────────────────
     now_local = datetime.now(ZoneInfo("America/New_York"))
-    yesterday = now_local - timedelta(days=4) #keep me at zero in the future
+    yesterday = now_local - timedelta(days=0) #keep me at zero in the future
     
-    #target_labels = [
-    #    f"{yesterday.month}/{yesterday.day}",
-    #    f"{now_local.month}/{now_local.day}",
-    #    "TODAY"
-    #]
+    target_labels = [
+        f"{yesterday.month}/{yesterday.day}",
+        f"{now_local.month}/{now_local.day}",
+        "TODAY"
+    ]
     # Temporary wide net to train the DB instantly
-    target_labels = [f"{now_local.month}/{now_local.day - i}" for i in range(6)] + ["TODAY"]
+    # target_labels = [f"{now_local.month}/{now_local.day - i}" for i in range(6)] + ["TODAY"]
     print(f"📅 Scanning calendar columns matching window: {target_labels}\n")
     
     day_blocks = soup.find_all("li", class_="day")
