@@ -1,4 +1,5 @@
 import requests
+import re
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo # Built into Python 3.9+
