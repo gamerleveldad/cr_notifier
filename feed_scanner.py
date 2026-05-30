@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from google import genai
 
 # ─── CONFIGURATION & GLOBALS ──────────────────────────────────────────────────
 CALENDAR_URL = "https://www.crunchyroll.com/simulcastcalendar?filter=premium"
@@ -143,29 +144,77 @@ def check_missing_schedules(found_titles, current_weekday):
 
 def get_smart_recommendation():
     """
-    Finds a candidate show from the recommendation pool.
-    Strictly filters out anything you are currently watching, completed, or disliked.
+    Gathers user preferences from SQLite and queries Gemini 
+    to generate a tailored, minimalist anime recommendation.
     """
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        print("⚠️ Warning: Skipping AI recommendation. Missing GEMINI_API_KEY environment variable.")
+        return None
+
+    # 1. Gather your real historical preferences from SQLite
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # The SQL Exclusion Filter: Selects a candidate you haven't touched or hated
-    cursor.execute('''
-        SELECT p.anime_name, p.genre 
-        FROM recommendation_pool p
-        LEFT JOIN watch_history h ON p.anime_name = h.anime_name
-        WHERE h.anime_name IS NULL 
-           OR (h.status NOT IN ('Watching', 'Dormant', 'Completed') AND h.user_rating != 'Disliked')
-        ORDER BY RANDOM()
-        LIMIT 1
-    ''')
+    # Get everything you're currently watching or liked
+    cursor.execute("SELECT anime_name FROM watch_history WHERE status = 'Watching' OR user_rating = 'Liked'")
+    liked_shows = [row[0] for row in cursor.fetchall()]
     
-    result = cursor.fetchone()
+    # Get everything you explicitly hate
+    cursor.execute("SELECT anime_name FROM watch_history WHERE user_rating = 'Disliked'")
+    disliked_shows = [row[0] for row in cursor.fetchall()]
+    
     conn.close()
+
+    # 2. Define your custom preference prompt instructions
+    user_style_prompt = (
+        "I enjoy action, fantasy, progression systems, and well-animated combat. "
+        "I prefer anime that has comedy mixed in."
+        "I do not like anime that has strong mature themes"
+        "I like any anime with aviation mixed in"
+        "I do not like anime with a lot of gore"
+        "I do not like bittersweet anime"
+        "I do like rom com but it has to lean more on the comedy"
+    )
+
+    # 3. Construct the dynamic AI instruction packet
+    prompt = f"""
+    You are an expert anime recommendation engine tailored to my specific taste.
     
-    if result:
-        return f"Looking for something new? Try starting: **{result[0]}** ({result[1]})"
-    return None
+    Here is my profile data:
+    - My general preferences: {user_style_prompt}
+    - Anime I currently watch and love: {', '.join(liked_shows) if liked_shows else 'None logged yet'}
+    - CRITICAL EXCLUSION LIST (Never suggest these or anything highly similar): {', '.join(disliked_shows) if disliked_shows else 'None'}
+    
+    Based on this data, select ONE highly rated English-dubbed anime available on Crunchyroll that I have not watched yet.
+    
+    CRITICAL FORMATTING RULE:
+    Your entire response must be exactly one single line matching this format without any introductory prose, markdown bolding around the title, or conversational filler:
+    Looking for something new? Try starting: [Anime Name] ([Genre]) - [One sentence hook explaining why I will love it based on my history]
+    """
+
+    # 4. Initialize the Gemini client and dispatch the secure request
+    try:
+        print("🧠 Querying Gemini for a personalized recommendation...")
+        client = genai.Client(api_key=gemini_key)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        
+        ai_suggestion = response.text.strip()
+        
+        # Format safety wrap: Ensures your markdown bold requirements match your styling preference
+        if "Try starting:" in ai_suggestion:
+            # Safely inject the bold styling around the title if the AI returned it raw
+            ai_suggestion = ai_suggestion.replace("Try starting: ", "Try starting: **")
+            ai_suggestion = ai_suggestion.replace(" (", "** (", 1)
+            
+        return ai_suggestion
+
+    except Exception as e:
+        print(f"Gemini AI Generation failed: {e}")
+        return None
 
 # ─── PARSING & SCRAPING HELPERS ───────────────────────────────────────────────
 
