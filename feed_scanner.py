@@ -171,6 +171,7 @@ def get_smart_recommendation():
         "I enjoy action, fantasy, progression systems, and well-animated combat. "
         "I prefer anime that has comedy mixed in."
         "I do not like anime that has strong mature themes"
+        "I only want age range 16+ and under via the German rating system"
         "I like any anime with aviation mixed in"
         "I do not like anime with a lot of gore"
         "I do not like bittersweet anime"
