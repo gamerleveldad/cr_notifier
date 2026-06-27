@@ -176,6 +176,9 @@ def get_smart_recommendation():
         "I do not like anime with a lot of gore"
         "I do not like bittersweet anime"
         "I do like rom com but it has to lean more on the comedy"
+        "I do not like shows with excessive fan service"
+        "I do not like shows that lean heavy on the harem story type."
+        "I will tolerate shows with very mild fan service or harem elements, especially if they are for comedic effect without taking away from the story."
     )
 
     # 3. Construct the dynamic AI instruction packet
